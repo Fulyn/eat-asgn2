@@ -148,9 +148,13 @@ def find_chessboard_corners(
 
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     succ, corners = cv2.findChessboardCorners(gray, chessboard_size, None)
-    # We can add sub-pixel refinement (cv2.cornerSubPix) here to improve the accuracy
-    # But we found that in simulation the sub-pixel refinement is not necessary
-    # So we don't add it for simplicity
+    if succ:
+        criteria = (
+            cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+            50,
+            1e-4,
+        )
+        corners = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
     return succ, corners
 
 def get_corners_in_chessboard_frame(
@@ -199,7 +203,22 @@ def solve_pnp_checkboard(
     tuple[bool, np.ndarray, np.ndarray]
         A tuple containing a boolean indicating whether the PnP problem was solved, the rotation vector (with shape (3, 1), in axis angle) and the translation vector (with shape (3, 1)) of the chessboard in the camera frame.
     """
-    ret, rvec, tvec = cv2.solvePnP(chessboard_corners, corners, intrinsics, None)
+    ret, rvec, tvec = cv2.solvePnP(
+        chessboard_corners,
+        corners,
+        intrinsics,
+        None,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+    if ret and hasattr(cv2, "solvePnPRefineLM"):
+        rvec, tvec = cv2.solvePnPRefineLM(
+            chessboard_corners,
+            corners,
+            intrinsics,
+            None,
+            rvec,
+            tvec,
+        )
     return ret, rvec, tvec
 
 def calibrate_hand_eye(
@@ -308,8 +327,17 @@ def main():
         (0.06, -0.16, -0.12),
         (-0.04, 0.06, 0.18),
     ]
+    rng = np.random.default_rng(0)
+    candidates = list(zip(offsets, angle_sets))
+    for _ in range(60):
+        candidates.append(
+            (
+                rng.uniform([-0.10, -0.09, -0.03], [0.10, 0.09, 0.06]),
+                rng.uniform([-0.22, -0.18, -0.20], [0.22, 0.18, 0.20]),
+            )
+        )
 
-    for offset, angles in zip(offsets, angle_sets):
+    for offset, angles in candidates:
         pose = init_eef.copy()
         delta_rot = (
             axangle2mat([1, 0, 0], angles[0])
@@ -334,18 +362,50 @@ def main():
         rot, _ = cv2.Rodrigues(rvec)
         chessboard_poses.append(to_pose(tvec.reshape(3), rot))
         gripper_poses.append(to_pose(*env.robot_model.fk_eef(env.sim.robot_qpos)))
+        if len(gripper_poses) >= 30:
+            break
 
     if len(gripper_poses) < 3:
         raise RuntimeError(f"Only collected {len(gripper_poses)} valid calibration views")
 
     gripper_poses = np.stack(gripper_poses)
     chessboard_poses = np.stack(chessboard_poses)
-    est_rot, est_trans = calibrate_hand_eye(
-        gripper_poses[:, :3, :3],
-        gripper_poses[:, :3, 3].reshape(-1, 3, 1),
-        chessboard_poses[:, :3, :3],
-        chessboard_poses[:, :3, 3].reshape(-1, 3, 1),
-    )
+    methods = [
+        cv2.CALIB_HAND_EYE_TSAI,
+        cv2.CALIB_HAND_EYE_PARK,
+        cv2.CALIB_HAND_EYE_HORAUD,
+        cv2.CALIB_HAND_EYE_ANDREFF,
+        cv2.CALIB_HAND_EYE_DANIILIDIS,
+    ]
+    best_score = np.inf
+    est_rot, est_trans = None, None
+    for method in methods:
+        try:
+            cand_rot, cand_trans = cv2.calibrateHandEye(
+                gripper_poses[:, :3, :3],
+                gripper_poses[:, :3, 3].reshape(-1, 3, 1),
+                chessboard_poses[:, :3, :3],
+                chessboard_poses[:, :3, 3].reshape(-1, 3, 1),
+                method=method,
+            )
+        except cv2.error:
+            continue
+        cand_pose = to_pose(cand_trans.reshape(3), cand_rot)
+        marker_poses = gripper_poses @ cand_pose[None] @ chessboard_poses
+        trans_score = marker_poses[:, :3, 3].std(axis=0).mean()
+        mean_rot = marker_poses[0, :3, :3]
+        rot_score = np.mean(
+            [
+                np.abs(mat2axangle(np.linalg.inv(mean_rot) @ pose[:3, :3])[1])
+                for pose in marker_poses
+            ]
+        )
+        score = trans_score + 0.02 * rot_score
+        if score < best_score:
+            best_score = score
+            est_rot, est_trans = cand_rot, cand_trans
+    if est_rot is None:
+        raise RuntimeError("Hand-eye calibration failed for all OpenCV methods")
     est_result = to_pose(est_trans.reshape(3), est_rot)
 
     env.close()
