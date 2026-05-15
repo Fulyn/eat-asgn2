@@ -10,8 +10,12 @@ def rot6d_to_matrix(rot6d: torch.Tensor) -> torch.Tensor:
     """Convert Zhou et al. 6D rotation representation to rotation matrices."""
     a1 = rot6d[..., 0:3]
     a2 = rot6d[..., 3:6]
-    b1 = F.normalize(a1, dim=-1)
-    b2 = F.normalize(a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1, dim=-1)
+    b1 = F.normalize(a1, dim=-1, eps=1e-6)
+    b2 = F.normalize(
+        a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1,
+        dim=-1,
+        eps=1e-6,
+    )
     b3 = torch.cross(b1, b2, dim=-1)
     return torch.stack((b1, b2, b3), dim=-1)
 
@@ -76,9 +80,8 @@ class EstPoseNet(nn.Module):
         """
         pred_trans, pred_rot = self.est(pc)
         trans_loss = F.smooth_l1_loss(pred_trans, trans)
-        rot_loss = rotation_geodesic_loss(pred_rot, rot)
-        rot_frob = F.mse_loss(pred_rot, rot)
-        loss = 20.0 * trans_loss + rot_loss + 0.1 * rot_frob
+        rot_loss = F.mse_loss(pred_rot, rot)
+        loss = 20.0 * trans_loss + 5.0 * rot_loss
         metric = dict(
             loss=loss,
             trans_loss=trans_loss.detach(),
