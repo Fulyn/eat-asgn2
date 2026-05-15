@@ -48,24 +48,10 @@ class EstCoordNet(nn.Module):
         return self.coord_head(feat).transpose(1, 2)
 
     @staticmethod
-    def fit_pose(
-        obj_coord: torch.Tensor,
-        cam_pc: torch.Tensor,
-        weight: torch.Tensor = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if weight is None:
-            src_mean = obj_coord.mean(dim=1, keepdim=True)
-            dst_mean = cam_pc.mean(dim=1, keepdim=True)
-            src = obj_coord - src_mean
-            dst = cam_pc - dst_mean
-            cov = torch.bmm(src.transpose(1, 2), dst)
-        else:
-            weight = weight / weight.sum(dim=1, keepdim=True).clamp_min(1e-8)
-            src_mean = (obj_coord * weight[..., None]).sum(dim=1, keepdim=True)
-            dst_mean = (cam_pc * weight[..., None]).sum(dim=1, keepdim=True)
-            src = obj_coord - src_mean
-            dst = cam_pc - dst_mean
-            cov = torch.bmm((src * weight[..., None]).transpose(1, 2), dst)
+    def fit_pose(obj_coord: torch.Tensor, cam_pc: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        src = obj_coord - obj_coord.mean(dim=1, keepdim=True)
+        dst = cam_pc - cam_pc.mean(dim=1, keepdim=True)
+        cov = torch.bmm(src.transpose(1, 2), dst)
         u, _, vh = torch.linalg.svd(cov)
         a = torch.bmm(u, vh)
         det = torch.det(a)
@@ -73,7 +59,7 @@ class EstCoordNet(nn.Module):
         fix[:, 2, 2] = torch.where(det < 0, -torch.ones_like(det), torch.ones_like(det))
         a = torch.bmm(torch.bmm(u, fix), vh)
         rot = a.transpose(1, 2)
-        trans = dst_mean.squeeze(1) - torch.bmm(src_mean, a).squeeze(1)
+        trans = cam_pc.mean(dim=1) - torch.bmm(obj_coord.mean(dim=1).unsqueeze(1), a).squeeze(1)
         return trans, rot
 
     def forward(
@@ -131,19 +117,4 @@ class EstCoordNet(nn.Module):
         """
         pred_coord = self.predict_coord(pc)
         trans, rot = self.fit_pose(pred_coord, pc)
-        base_trans, base_rot = trans, rot
-        base_pred_pc = torch.bmm(pred_coord, base_rot.transpose(1, 2)) + base_trans[:, None, :]
-        base_residual = (base_pred_pc - pc).norm(dim=-1)
-
-        residual = base_residual
-        for _ in range(2):
-            scale = residual.median(dim=1, keepdim=True).values.clamp_min(1e-4)
-            weight = 1.0 / (1.0 + (residual / (2.0 * scale)).square())
-            trans, rot = self.fit_pose(pred_coord, pc, weight)
-            pred_pc = torch.bmm(pred_coord, rot.transpose(1, 2)) + trans[:, None, :]
-            residual = (pred_pc - pc).norm(dim=-1)
-
-        use_refined = residual.mean(dim=1) < base_residual.mean(dim=1)
-        trans = torch.where(use_refined[:, None], trans, base_trans)
-        rot = torch.where(use_refined[:, None, None], rot, base_rot)
         return trans, rot
