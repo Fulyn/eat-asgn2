@@ -47,6 +47,21 @@ class EstCoordNet(nn.Module):
         feat = torch.cat([local, global_feat, x.transpose(1, 2)], dim=1)
         return self.coord_head(feat).transpose(1, 2)
 
+    @staticmethod
+    def fit_pose(obj_coord: torch.Tensor, cam_pc: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        src = obj_coord - obj_coord.mean(dim=1, keepdim=True)
+        dst = cam_pc - cam_pc.mean(dim=1, keepdim=True)
+        cov = torch.bmm(src.transpose(1, 2), dst)
+        u, _, vh = torch.linalg.svd(cov)
+        a = torch.bmm(u, vh)
+        det = torch.det(a)
+        fix = torch.eye(3, device=cam_pc.device, dtype=cam_pc.dtype).unsqueeze(0).repeat(cam_pc.shape[0], 1, 1)
+        fix[:, 2, 2] = torch.where(det < 0, -torch.ones_like(det), torch.ones_like(det))
+        a = torch.bmm(torch.bmm(u, fix), vh)
+        rot = a.transpose(1, 2)
+        trans = cam_pc.mean(dim=1) - torch.bmm(obj_coord.mean(dim=1).unsqueeze(1), a).squeeze(1)
+        return trans, rot
+
     def forward(
         self, pc: torch.Tensor, coord: torch.Tensor, **kwargs
     ) -> Tuple[float, Dict[str, float]]:
@@ -101,15 +116,5 @@ class EstCoordNet(nn.Module):
         The only requirement is that the input and output should be torch tensors on the same device and with the same dtype.
         """
         pred_coord = self.predict_coord(pc)
-        src = pred_coord - pred_coord.mean(dim=1, keepdim=True)
-        dst = pc - pc.mean(dim=1, keepdim=True)
-        cov = torch.bmm(src.transpose(1, 2), dst)
-        u, _, vh = torch.linalg.svd(cov)
-        a = torch.bmm(u, vh)
-        det = torch.det(a)
-        fix = torch.eye(3, device=pc.device, dtype=pc.dtype).unsqueeze(0).repeat(pc.shape[0], 1, 1)
-        fix[:, 2, 2] = torch.where(det < 0, -torch.ones_like(det), torch.ones_like(det))
-        a = torch.bmm(torch.bmm(u, fix), vh)
-        rot = a.transpose(1, 2)
-        trans = pc.mean(dim=1) - torch.bmm(pred_coord.mean(dim=1).unsqueeze(1), a).squeeze(1)
+        trans, rot = self.fit_pose(pred_coord, pc)
         return trans, rot
