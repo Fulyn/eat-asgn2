@@ -3,4 +3,7 @@ __pycache__/
 .DS_Store
 wandb/
 data/
-exps/
+exps/**/log/
+exps/**/code/
+exps/**/*.html
+exps/**/git_status.txt
