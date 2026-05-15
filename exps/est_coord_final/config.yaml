@@ -1,7 +1,7 @@
 batch_size: 64
 checkpoint: null
 device: cuda
-exp_name: est_coord_retrain
+exp_name: est_coord_final
 learning_rate: 0.001
 learning_rate_min: 1.0e-06
 log_interval: 100
