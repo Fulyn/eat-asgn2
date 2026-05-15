@@ -14,6 +14,14 @@ from src.data import Loader, PoseDataset
 from src.model import get_model
 
 
+def optimizer_to(optimizer: torch.optim.Optimizer, device: torch.device):
+    """Move optimizer state tensors after loading a CPU checkpoint."""
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+
+
 def main():
     # use argparse so that we can override config.yaml in command line
     # the priproity is command_line_args > config_path > default_value
@@ -105,6 +113,7 @@ def main():
 
     # init training
     model.to(device)
+    optimizer_to(optimizer, device)
     model.train()
 
     # start training loop here
