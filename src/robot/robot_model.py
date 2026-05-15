@@ -219,9 +219,16 @@ class RobotModel:
         """
         pose = to_pose(trans, rot)
         for _ in range(retry_times):
-            ik_result, success, _, _, _ = self.robot.ik_lm_chan(
-                pose, end=self.cfg.link_eef, q0=init_qpos
-            )
+            if hasattr(self.robot, "ik_lm_chan"):
+                ik_result, success, _, _, _ = self.robot.ik_lm_chan(
+                    pose, end=self.cfg.link_eef, q0=init_qpos
+                )
+            else:
+                ik_ret = self.robot.ik_LM(pose, end=self.cfg.link_eef, q0=init_qpos)
+                if hasattr(ik_ret, "q"):
+                    ik_result, success = ik_ret.q, ik_ret.success
+                else:
+                    ik_result, success = ik_ret[0], ik_ret[1]
             if success:
                 if delta_thresh is not None:
                     if np.linalg.norm(ik_result - init_qpos) > delta_thresh:
